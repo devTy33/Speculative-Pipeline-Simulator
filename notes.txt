@@ -1,0 +1,57 @@
+Config Assumptions 
+- max reservation stations = 10
+- max entries in reorder buffer = 10
+- latencies for effective addr, branch, int operations is 1
+- all branches predicted correctly 
+
+
+Instructions are all read from STDIN
+Write results to STDOUT
+
+
+Instruction types:
+
+    Data transfers: lw, flw, sw, fsw
+    arithmetic:     add, sub
+    control:        beq, bne
+    floating point: fadd.s, fsub.s, fmul.s, fdiv.s
+
+
+Simulation Assumptions:
+
+    - one instruction issued per cycle 
+    - One instruction can write to CDB per cycle 
+    - one data memory access (read, write) can occur per cycle 
+    - one instruction can be commited per cycle 
+
+
+
+These are the # of slots in the reservation station!!
+
+
+eff addr: 2
+fp adds: 3
+fp muls: 3
+ints: 2
+reorder: 5
+
+leaves the reservation station on commit! 
+
+
+
+
+
+    void issue()
+    - only issue 1 instruction per cycle 
+
+    void execute()
+    - check for dependencies in operands 
+    - check for structural hazards 
+
+    void mem_read()
+    - only for loads 
+
+    void write_back()
+    - one at a time 
+
+    void commit()
