@@ -55,3 +55,20 @@ leaves the reservation station on commit!
     - one at a time 
 
     void commit()
+
+    Reservation stations are freed when the instruciton writes its result!!!
+    Reservation station count = Functional unit count
+
+"One data memory access per cycle" -- wtf does this mean:
+
+lw     x2,35(x1):2
+loads what is in x1
+
+sw     x2,36(x1):1
+stores what is in x2
+
+
+
+3. At most one data memory access (memory read or memory write) can occur per cycle.
+Read - load in mem stage
+Write - Store in commit stage 

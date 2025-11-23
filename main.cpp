@@ -3,6 +3,8 @@
 #include <sstream>
 #include <string>
 #include <map>
+#include <climits>
+#include <vector>
 using namespace std;
 
 struct Config {
@@ -30,6 +32,7 @@ struct Instruction {
     int issue_cycle;
     int execute_start_cycle;
     int execute_complete_cycle;
+    int mem_read_cycle;
     int write_back_cycle;
     int commit_cycle;
 
@@ -88,6 +91,12 @@ vector<Instruction> parse_instructions(){
             inst.src_reg2 = rest_of_line.substr(c2 +1);
         }
 
+        inst.issue_cycle = -1;
+        inst.execute_start_cycle = -1;
+        inst.execute_complete_cycle = -1;
+        inst.write_back_cycle = -1;
+        inst.commit_cycle = -1;
+        inst.mem_read_cycle = -1;
         instructions.push_back(inst);
     }
     return instructions;
@@ -141,7 +150,7 @@ int parse_config(string filename, Config &config){
 }
 
 class Simulator {
-    
+    public:
     vector<Instruction> instructions;
     int completed_instructions = 0;
         
@@ -172,18 +181,40 @@ class Simulator {
         next_instr_issue = 0;
         rob_start = 0;
         rob_end = 0;
+        mem_used = false;
     }
+
+    void run(){
+
+        while(completed_instructions < instructions.size()){
+            cycle++;
+            mem_used = false;
+            issue();
+            execute();
+            mem_read();
+            write_back();
+            commit();
+        }
+
+    }
+
 
     private:
     int cycle;
+    // once per cycle
+    bool mem_used;
     int rb_delays;
     int rs_delays;
     int dmc_delays;
     map<string, int> reorder_status; // register -> ROB entry producing it (-1 if ready)
+    // key = when it was issued
+    // valid pair<int,int> = <ROB entry, RS type>
+    map<int, pair<int,int>> write_back_candidates;
 
     int next_instr_issue;
     int rob_start;
     int rob_end;
+
 
     struct reservation_station_slot{
         bool busy;
@@ -211,6 +242,17 @@ class Simulator {
     vector<reservation_station_slot> int_stations;
     vector<reorder_buffer_entry> reorder_buffer;
 
+    int get_latency(string type) {
+        if (type == "FP_ADD") return fp_add_latency;
+        if (type == "FP_SUB") return fp_sub_latency;
+        if (type == "FP_MUL") return fp_mul_latency;
+        if (type == "FP_DIV") return fp_div_latency;
+        if (type == "LOAD" || type == "STORE") return 1;  
+        if (type == "INT_ADD" || type == "INT_SUB") return 1;
+        if (type == "BRANCH") return 1;
+        return 1;
+    }
+
     vector<reservation_station_slot> *get_reservation_station(string type){
         if (type == "LOAD" || type == "STORE") return &eff_addr_stations;
         if (type == "FP_ADD" || type == "FP_SUB") return &fp_add_stations;
@@ -218,7 +260,22 @@ class Simulator {
         if (type == "INT_ADD" || type == "INT_SUB" || type == "BRANCH") return &int_stations;
         return nullptr;
     }
-
+    // on loads need to check for RAW since we don't actually access mem (hard codede addr)
+    bool check_mem_dependency(int load_id){
+        Instruction &load_inst = instructions[load_id];
+        for(int i = 0; i < load_id; i++){
+            Instruction &prev_inst = instructions[i];
+            if(prev_inst.type == "STORE" && prev_inst.memory_address == load_inst.memory_address){
+                if(prev_inst.execute_complete_cycle == -1){
+                    return true;
+                }
+                if(prev_inst.commit_cycle == -1){
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
     void issue(){
         if(next_instr_issue >= instructions.size()) return; 
 
@@ -290,36 +347,166 @@ class Simulator {
         }
         rob_end = (rob_end + 1) % reorder_buffer.size();
         next_instr_issue++;
+        inst.issue_cycle = cycle;
 
     }
 
     void exec_helper(vector<reservation_station_slot> &rs_pool){
         for(auto &rs : rs_pool){
             if(!rs.busy) continue;
+            Instruction &inst = instructions[rs.instruction_id];
+            if(rs.executing){
+                rs.remaining_cycles--;
+                if(rs.remaining_cycles == 0){
+                    inst.execute_complete_cycle = cycle;
+                    rs.executing = false;
+                }
+                continue;
+            }
+            /* save till mem stage
+            if(inst.type == "LOAD" && check_mem_dependency(rs.instruction_id)){
+                dmc_delays++;
+                continue;
+            }
+            */
+
+            if(rs.operand1 != -1 || rs.operand2 != -1) continue; 
+        
             
+            //start new execution
+            rs.executing = true;
+            inst.execute_start_cycle = cycle;
+            rs.remaining_cycles = get_latency(inst.type);
+
         }
     }
     void execute(){
-
-
-
+        exec_helper(eff_addr_stations);
+        exec_helper(fp_add_stations);
+        exec_helper(fp_mul_stations);
+        exec_helper(int_stations);
     }
+
     void mem_read(){
+        // we can do one mem read per cycle
+        for(auto &rs : eff_addr_stations){
+            if(!rs.busy) continue;
+            Instruction &inst = instructions[rs.instruction_id];
+
+            if(inst.type != "LOAD") continue;
+
+            if(inst.execute_complete_cycle == -1) continue;
+            if(inst.mem_read_cycle != -1) continue;
+            if(check_mem_dependency(rs.instruction_id)) continue; 
+
+            //contstraint of one mem access per cycle 
+            if(mem_used){
+                dmc_delays++;
+                return;
+            }
+
+            inst.mem_read_cycle = cycle;
+            mem_used = true;
+            break;
+
+        }
+
 
     }
-    void write_back(){
+    // 1 per cycle 
+    // earliest issued instruction that is ready to write gets priority 
+    void write_back_helper(vector<reservation_station_slot> &rs_pool, int rs_type){
+        int earliest_issue_cycle = INT_MAX;
+        int res_index = -1;
+        for(int i = 0; i < rs_pool.size(); i++){
+            if(!rs_pool[i].busy) continue;
+            Instruction &inst = instructions[rs_pool[i].instruction_id];
+            if(inst.type == "STORE") continue;
+
+            bool can_write_back = false;
+            if(inst.type == "LOAD"){
+                can_write_back = (inst.mem_read_cycle != -1 && inst.write_back_cycle == -1);
+            }
+            else {
+                can_write_back = (inst.execute_complete_cycle != -1 && inst.write_back_cycle == -1);
+            }
+
+            if(can_write_back && inst.issue_cycle < earliest_issue_cycle){
+                earliest_issue_cycle = inst.issue_cycle;
+                res_index = i;
+            }
+        }
+        if(res_index != -1) write_back_candidates[earliest_issue_cycle] = make_pair(res_index, rs_type);
+    }
+    void write_back(){  
+        write_back_helper(eff_addr_stations, 0);
+        write_back_helper(fp_add_stations, 1);
+        write_back_helper(fp_mul_stations, 2);
+        write_back_helper(int_stations, 3);
+
+        if(write_back_candidates.empty()) return;
+
+        int res_type = write_back_candidates.begin()->second.second;
+        int res_index = write_back_candidates.begin()->second.first;
+        write_back_candidates.clear();
+
+        vector<reservation_station_slot> *rs_pool;
+        if(res_type == 0) rs_pool = &eff_addr_stations;
+        else if(res_type == 1) rs_pool = &fp_add_stations;
+        else if(res_type == 2) rs_pool = &fp_mul_stations;
+        else rs_pool = &int_stations;
+        
+        // mark instruction as written back
+        reservation_station_slot &rs = (*rs_pool)[res_index];
+        Instruction &inst = instructions[rs.instruction_id];
+        inst.write_back_cycle = cycle;
+
+        // mark ROB entry as ready
+        reorder_buffer[rs.dest_rob_entry].ready = true;
+
+
+        auto update_deps = [&](vector<reservation_station_slot>& rs_pool){
+            for(auto &slot : rs_pool){
+                if(slot.busy){
+                    if(slot.operand1 == rs.dest_rob_entry) slot.operand1 = -1;
+                    if(slot.operand2 == rs.dest_rob_entry) slot.operand2 = -1; 
+                }
+            }
+        };
+
+        update_deps(eff_addr_stations);
+        update_deps(fp_add_stations);
+        update_deps(fp_mul_stations);
+        update_deps(int_stations);
+
+        rs.busy = false;
+
+
 
     }
     void commit(){
-        
-    }
+        if(rob_start == rob_end && !reorder_buffer[rob_start].busy) return;
 
-    void run(){
+        reorder_buffer_entry &rob_entry = reorder_buffer[rob_start];
+        if(!rob_entry.busy || !rob_entry.ready) return;
 
-        while(completed_instructions < instructions.size()){
-            
+        Instruction &inst = instructions[rob_entry.instruction_id];
+        if(inst.type == "STORE"){
+            if(mem_used) return;
+            mem_used = true;
         }
 
+        inst.commit_cycle = cycle;
+        
+        if(!inst.dest_reg.empty()){
+            if(reorder_status.count(inst.dest_reg) > 0 && reorder_status[inst.dest_reg] == rob_start){
+                reorder_status[inst.dest_reg] = -1;
+            }
+        }
+
+        rob_start = (rob_start + 1) % reorder_buffer.size();
+        completed_instructions++;
+        rob_entry.busy = false;
     }
 
 };
@@ -334,6 +521,8 @@ int main(){
         return 1;
     }
     vector<Instruction> instructions = parse_instructions();
+    Simulator simulator(config, instructions);
+    simulator.run();
 
     return 0;
 }
