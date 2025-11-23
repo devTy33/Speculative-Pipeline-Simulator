@@ -5,7 +5,12 @@
 #include <map>
 #include <climits>
 #include <vector>
+#include <cstring>
 using namespace std;
+
+#define LINESIZE 80
+#define MAXLINES 500
+
 
 struct Config {
     int eff_addr_stations;
@@ -51,6 +56,14 @@ string get_instruction_type(const string& opcode) {
     return "UNKNOWN";
 }
 
+string trim(const string& str) {
+    size_t first = str.find_first_not_of(" \t\r\n");
+    if (first == string::npos) return "";
+    size_t last = str.find_last_not_of(" \t\r\n");
+    return str.substr(first, (last - first + 1));
+}
+
+
 vector<Instruction> parse_instructions(){
     string line;
     vector<Instruction> instructions;
@@ -73,22 +86,22 @@ vector<Instruction> parse_instructions(){
             inst.memory_address = stoi(rest_of_line.substr(colon +1));
 
             if(inst.type == "LOAD"){
-                inst.dest_reg = rest_of_line.substr(0, c);
-                inst.src_reg1 = rest_of_line.substr(open_paren + 1, close_paren - open_paren -1);
+                inst.dest_reg = trim(rest_of_line.substr(0, c));
+                inst.src_reg1 = trim(rest_of_line.substr(open_paren + 1, close_paren - open_paren -1));
                 inst.src_reg2 = "";
             }
             else if(inst.type == "STORE"){
                 inst.dest_reg = "";
-                inst.src_reg1 = rest_of_line.substr(0, c);
-                inst.src_reg2 = rest_of_line.substr(open_paren + 1, close_paren - open_paren -1);
+                inst.src_reg1 = trim(rest_of_line.substr(0, c));
+                inst.src_reg2 = trim(rest_of_line.substr(open_paren + 1, close_paren - open_paren -1));
             }
         }
         else {
             size_t c1 = rest_of_line.find(',');
             size_t c2 = rest_of_line.find(',', c1 +1);
-            inst.dest_reg = rest_of_line.substr(0, c1);
-            inst.src_reg1 = rest_of_line.substr(c1 +1, c2 - c1 - 1);
-            inst.src_reg2 = rest_of_line.substr(c2 +1);
+            inst.dest_reg = trim(rest_of_line.substr(0, c1));
+            inst.src_reg1 = trim(rest_of_line.substr(c1 +1, c2 - c1 - 1));
+            inst.src_reg2 = trim(rest_of_line.substr(c2 +1));
         }
 
         inst.issue_cycle = -1;
@@ -159,6 +172,10 @@ class Simulator {
     int fp_mul_latency;
     int fp_div_latency;
 
+    char out[MAXLINES][LINESIZE];
+    int lines;
+    bool first_output;
+
     Simulator(const Config &config, const vector<Instruction> &instrs) {
         eff_addr_stations.resize(config.eff_addr_stations);
         fp_add_stations.resize(config.fp_add_stations);
@@ -177,11 +194,26 @@ class Simulator {
         rb_delays = 0;
         rs_delays = 0;
         dmc_delays = 0;
+        true_dep_delays = 0;
 
         next_instr_issue = 0;
         rob_start = 0;
         rob_end = 0;
         mem_used = false;
+        first_output = true;
+    }
+    void dump_output(){
+        for(int i = 0; i < lines; i++){
+            printf("%s", out[i]);
+        }
+        printf("\n\n");
+        printf("Delays\n");
+        printf("------\n");
+        printf("reorder buffer delays: %d\n", rb_delays);
+        printf("reservation station delays: %d\n", rs_delays);
+        printf("data memory conflict delays: %d\n", dmc_delays);
+        // You'll need to track true_dependence_delays separately
+        printf("true dependence delays: %d\n", true_dep_delays);
     }
 
     void run(){
@@ -194,7 +226,12 @@ class Simulator {
             mem_read();
             write_back();
             commit();
+
+            //cout << "After cycle " << cycle << ":\n";
+            //cout << completed_instructions << " instructions completed\n";
         }
+
+        dump_output();
 
     }
 
@@ -206,6 +243,7 @@ class Simulator {
     int rb_delays;
     int rs_delays;
     int dmc_delays;
+    int true_dep_delays;
     map<string, int> reorder_status; // register -> ROB entry producing it (-1 if ready)
     // key = when it was issued
     // valid pair<int,int> = <ROB entry, RS type>
@@ -320,6 +358,9 @@ class Simulator {
         rs_slot.instruction_id = next_instr_issue;
         rs_slot.dest_rob_entry = rob_end;
         rs_slot.executing = false;
+        rs_slot.remaining_cycles = get_latency(inst.type);
+
+
 
         if(!inst.src_reg1.empty()){
             if(reorder_status.count(inst.src_reg1) > 0 && reorder_status[inst.src_reg1] != -1){
@@ -349,6 +390,17 @@ class Simulator {
         next_instr_issue++;
         inst.issue_cycle = cycle;
 
+
+
+                if(inst.opcode == "fmul.s"){
+            cout << "Cycle " << cycle << ": fmul issued, operand1=" << rs_slot.operand1 
+                << " operand2=" << rs_slot.operand2 << endl;
+            cout << "  f2 in reorder_status? " << (reorder_status.count("f2") > 0) << endl;
+            if(reorder_status.count("f2") > 0){
+                cout << "  f2 ROB entry: " << reorder_status["f2"] << endl;
+            }
+        }
+
     }
 
     void exec_helper(vector<reservation_station_slot> &rs_pool){
@@ -363,6 +415,13 @@ class Simulator {
                 }
                 continue;
             }
+            if(inst.issue_cycle == cycle) continue;
+            if(inst.execute_complete_cycle != -1) continue;
+            
+            if(inst.opcode == "fmul.s"){
+            cout << "Cycle " << cycle << ": fmul operand1=" << rs.operand1 
+                 << " operand2=" << rs.operand2 << endl;
+            }
             /* save till mem stage
             if(inst.type == "LOAD" && check_mem_dependency(rs.instruction_id)){
                 dmc_delays++;
@@ -373,11 +432,20 @@ class Simulator {
             if(rs.operand1 != -1 || rs.operand2 != -1) continue; 
         
             
-            //start new execution
-            rs.executing = true;
             inst.execute_start_cycle = cycle;
-            rs.remaining_cycles = get_latency(inst.type);
-
+            int latency = get_latency(inst.type);
+        
+            if(latency == 1){
+                // Complete immediately
+                inst.execute_complete_cycle = cycle;
+                rs.executing = false;  // Not executing (done!)
+                rs.remaining_cycles = 0;
+            } else {
+                // Multi-cycle operation
+                rs.executing = true;
+                rs.remaining_cycles = latency - 1;
+            }
+         
         }
     }
     void execute(){
@@ -397,7 +465,12 @@ class Simulator {
 
             if(inst.execute_complete_cycle == -1) continue;
             if(inst.mem_read_cycle != -1) continue;
-            if(check_mem_dependency(rs.instruction_id)) continue; 
+            if(inst.execute_complete_cycle == cycle) continue;
+
+            if(check_mem_dependency(rs.instruction_id)){
+                true_dep_delays++;
+                continue; 
+            }
 
             //contstraint of one mem access per cycle 
             if(mem_used){
@@ -425,10 +498,10 @@ class Simulator {
 
             bool can_write_back = false;
             if(inst.type == "LOAD"){
-                can_write_back = (inst.mem_read_cycle != -1 && inst.write_back_cycle == -1);
+                can_write_back = (inst.mem_read_cycle != -1 && inst.write_back_cycle == -1 && inst.mem_read_cycle != cycle);
             }
             else {
-                can_write_back = (inst.execute_complete_cycle != -1 && inst.write_back_cycle == -1);
+                can_write_back = (inst.execute_complete_cycle != -1 && inst.write_back_cycle == -1 && inst.execute_complete_cycle != cycle);
             }
 
             if(can_write_back && inst.issue_cycle < earliest_issue_cycle){
@@ -491,13 +564,59 @@ class Simulator {
         if(!rob_entry.busy || !rob_entry.ready) return;
 
         Instruction &inst = instructions[rob_entry.instruction_id];
+        if(inst.mem_read_cycle == cycle || inst.write_back_cycle == cycle) return;
         if(inst.type == "STORE"){
             if(mem_used) return;
             mem_used = true;
         }
 
+        if(inst.execute_complete_cycle == cycle) return;  
+        if(inst.mem_read_cycle == cycle) return;
+        if(inst.write_back_cycle == cycle) return;
+
         inst.commit_cycle = cycle;
+        if(first_output){
+            lines = 0;
+            sprintf(out[lines++],
+                    "                    Pipeline Simulation\n");
+            sprintf(out[lines++],
+                    "-----------------------------------------------------------\n");
+            sprintf(out[lines++],
+                    "                                      Memory Writes\n");
+            sprintf(out[lines++],
+                    "     Instruction      Issues Executes  Read  Result Commits\n");
+            sprintf(out[lines++],
+                    "--------------------- ------ -------- ------ ------ -------\n");
+            first_output = false;
+        }
+        char line_buf[LINESIZE];
+        sprintf(out[lines], "%-21s %6d %3d -%3d ",
+                inst.og_line.c_str(),
+                inst.issue_cycle,
+                inst.execute_start_cycle,
+                inst.execute_complete_cycle);
         
+        // Memory Read column (only for loads)
+        if(inst.mem_read_cycle == -1){
+            sprintf(line_buf, "       ");
+        } else {
+            sprintf(line_buf, "%6d ", inst.mem_read_cycle);
+        }
+        strcat(out[lines], line_buf);
+        
+        // Write Result column (not for stores/branches)
+        if(inst.type == "STORE" || inst.type == "BRANCH"){
+            sprintf(line_buf, "       ");
+        } else {
+            sprintf(line_buf, "%6d ", inst.write_back_cycle);
+        }
+        strcat(out[lines], line_buf);
+        
+        // Commit cycle
+        sprintf(line_buf, "%7d\n", cycle);
+        strcat(out[lines++], line_buf);
+
+
         if(!inst.dest_reg.empty()){
             if(reorder_status.count(inst.dest_reg) > 0 && reorder_status[inst.dest_reg] == rob_start){
                 reorder_status[inst.dest_reg] = -1;
