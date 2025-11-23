@@ -203,6 +203,21 @@ class Simulator {
         first_output = true;
     }
     void dump_output(){
+        printf("Configuration\n");
+        printf("-------------\n");
+        printf("buffers:\n");
+        printf("   eff addr: %d\n", (int)eff_addr_stations.size());
+        printf("    fp adds: %d\n", (int)fp_add_stations.size());
+        printf("    fp muls: %d\n", (int)fp_mul_stations.size());
+        printf("       ints: %d\n", (int)int_stations.size());
+        printf("    reorder: %d\n", (int)reorder_buffer.size());
+        printf("\n");
+        printf("latencies:\n");
+        printf("   fp add: %d\n", fp_add_latency);
+        printf("   fp sub: %d\n", fp_sub_latency);
+        printf("   fp mul: %d\n", fp_mul_latency);
+        printf("   fp div: %d\n", fp_div_latency);
+        printf("\n\n");
         for(int i = 0; i < lines; i++){
             printf("%s", out[i]);
         }
@@ -390,17 +405,6 @@ class Simulator {
         next_instr_issue++;
         inst.issue_cycle = cycle;
 
-
-
-                if(inst.opcode == "fmul.s"){
-            cout << "Cycle " << cycle << ": fmul issued, operand1=" << rs_slot.operand1 
-                << " operand2=" << rs_slot.operand2 << endl;
-            cout << "  f2 in reorder_status? " << (reorder_status.count("f2") > 0) << endl;
-            if(reorder_status.count("f2") > 0){
-                cout << "  f2 ROB entry: " << reorder_status["f2"] << endl;
-            }
-        }
-
     }
 
     void exec_helper(vector<reservation_station_slot> &rs_pool){
@@ -417,11 +421,7 @@ class Simulator {
             }
             if(inst.issue_cycle == cycle) continue;
             if(inst.execute_complete_cycle != -1) continue;
-            
-            if(inst.opcode == "fmul.s"){
-            cout << "Cycle " << cycle << ": fmul operand1=" << rs.operand1 
-                 << " operand2=" << rs.operand2 << endl;
-            }
+           
             /* save till mem stage
             if(inst.type == "LOAD" && check_mem_dependency(rs.instruction_id)){
                 dmc_delays++;
