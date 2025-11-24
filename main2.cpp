@@ -510,23 +510,21 @@ class Simulator {
     }
 
     void mem_read(){
-        // we can do one mem read per cycle
-        for(auto &rs : eff_addr_stations){
-            if(!rs.busy) continue;
-            Instruction &inst = instructions[rs.instruction_id];
+  
+        for(int i = 0; i < reorder_buffer.size(); i++){
+            int rob_index = (rob_start + i) % reorder_buffer.size();
+            if(rob_index == rob_end && !reorder_buffer[rob_index].busy) break;
+            if(!reorder_buffer[rob_index].busy) continue;
 
-            if(inst.type != "LOAD") continue;
+            Instruction &inst = instructions[reorder_buffer[rob_index].instruction_id];
 
-            if(inst.execute_complete_cycle == -1) continue;
-            if(inst.mem_read_cycle != -1) continue;
-            if(inst.execute_complete_cycle == cycle) continue;
+            if(inst.type != "LOAD" || inst.execute_complete_cycle == -1 || inst.mem_read_cycle != -1 || inst.execute_complete_cycle == cycle) continue;
 
-            if(check_mem_dependency(rs.instruction_id)){
+            if(check_mem_dependency(reorder_buffer[rob_index].instruction_id)){
                 true_dep_delays++;
                 continue; 
             }
 
-            //contstraint of one mem access per cycle 
             if(mem_used){
                 dmc_delays++;
                 return;
@@ -534,69 +532,49 @@ class Simulator {
 
             inst.mem_read_cycle = cycle;
             mem_used = true;
-            break;
-
+            return;
         }
 
 
     }
-    // 1 per cycle 
-    // earliest issued instruction that is ready to write gets priority 
-    void write_back_helper(vector<reservation_station_slot> &rs_pool, int rs_type){
-        int earliest_issue_cycle = INT_MAX;
-        int res_index = -1;
-        for(int i = 0; i < rs_pool.size(); i++){
-            if(!rs_pool[i].busy) continue;
-            Instruction &inst = instructions[rs_pool[i].instruction_id];
-            if(inst.type == "STORE") continue;
+    
+    void write_back(){  
+     
+        int earliest_cycle = INT_MAX;
+        int earliest_ind = -1;
+        for(int i = 0; i < reorder_buffer.size(); i++){
+            int rob_index = (rob_start + i) % reorder_buffer.size();
+            if(rob_index == rob_end && !reorder_buffer[rob_index].busy) break;
+            if(!reorder_buffer[rob_index].busy) continue;
 
-            bool can_write_back = false;
+            Instruction &inst = instructions[reorder_buffer[rob_index].instruction_id];
+            
+            if(inst.type == "STORE" || inst.write_back_cycle != -1) continue;
+            
+            bool can_wb = false;
             if(inst.type == "LOAD"){
-                can_write_back = (inst.mem_read_cycle != -1 && inst.write_back_cycle == -1 && inst.mem_read_cycle != cycle);
+                can_wb = (inst.mem_read_cycle != -1 && inst.mem_read_cycle != cycle);
             }
             else {
-                can_write_back = (inst.execute_complete_cycle != -1 && inst.write_back_cycle == -1 && inst.execute_complete_cycle != cycle);
+                can_wb = (inst.execute_complete_cycle != -1 && inst.execute_complete_cycle != cycle);
             }
 
-            if(can_write_back && inst.issue_cycle < earliest_issue_cycle){
-                earliest_issue_cycle = inst.issue_cycle;
-                res_index = i;
+            if(can_wb && inst.issue_cycle < earliest_cycle){
+                earliest_cycle = inst.issue_cycle;
+                earliest_ind = rob_index;
             }
+
         }
-        if(res_index != -1) write_back_candidates[earliest_issue_cycle] = make_pair(res_index, rs_type);
-    }
-    void write_back(){  
-        write_back_helper(eff_addr_stations, 0);
-        write_back_helper(fp_add_stations, 1);
-        write_back_helper(fp_mul_stations, 2);
-        write_back_helper(int_stations, 3);
-
-        if(write_back_candidates.empty()) return;
-
-        int res_type = write_back_candidates.begin()->second.second;
-        int res_index = write_back_candidates.begin()->second.first;
-        write_back_candidates.clear();
-
-        vector<reservation_station_slot> *rs_pool;
-        if(res_type == 0) rs_pool = &eff_addr_stations;
-        else if(res_type == 1) rs_pool = &fp_add_stations;
-        else if(res_type == 2) rs_pool = &fp_mul_stations;
-        else rs_pool = &int_stations;
-        
-        // mark instruction as written back
-        reservation_station_slot &rs = (*rs_pool)[res_index];
-        Instruction &inst = instructions[rs.instruction_id];
-        inst.write_back_cycle = cycle;
-
-        // mark ROB entry as ready
-        reorder_buffer[rs.dest_rob_entry].ready = true;
-
+        if(earliest_ind == -1) return;
+        Instruction &earliest = instructions[reorder_buffer[earliest_ind].instruction_id];
+        earliest.write_back_cycle = cycle;
+        reorder_buffer[earliest_ind].ready = true;
 
         auto update_deps = [&](vector<reservation_station_slot>& rs_pool){
             for(auto &slot : rs_pool){
                 if(slot.busy){
-                    if(slot.operand1 == rs.dest_rob_entry) slot.operand1 = -1;
-                    if(slot.operand2 == rs.dest_rob_entry) slot.operand2 = -1; 
+                    if(slot.operand1 == earliest_ind) slot.operand1 = -1;
+                    if(slot.operand2 == earliest_ind) slot.operand2 = -1; 
                 }
             }
         };
@@ -605,12 +583,9 @@ class Simulator {
         update_deps(fp_add_stations);
         update_deps(fp_mul_stations);
         update_deps(int_stations);
-
-        rs.busy = false;
-
-
-
     }
+
+
     void commit(){
  
         if(rob_start == rob_end && !reorder_buffer[rob_start].busy){

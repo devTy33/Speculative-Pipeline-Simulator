@@ -1,7 +1,7 @@
 buffers
 
 eff addr: 2
-fp adds: 3
+fp adds: 2
 fp muls: 3
 ints: 2
 reorder: 5
