@@ -99,9 +99,16 @@ vector<Instruction> parse_instructions(){
         else {
             size_t c1 = rest_of_line.find(',');
             size_t c2 = rest_of_line.find(',', c1 +1);
-            inst.dest_reg = trim(rest_of_line.substr(0, c1));
-            inst.src_reg1 = trim(rest_of_line.substr(c1 +1, c2 - c1 - 1));
-            inst.src_reg2 = trim(rest_of_line.substr(c2 +1));
+            if(inst.type == "BRANCH"){
+                inst.dest_reg = "";
+                inst.src_reg1 = trim(rest_of_line.substr(0, c1));
+                inst.src_reg2 = trim(rest_of_line.substr(c1 + 1, c2 - c1 - 1));
+            }
+            else{
+                inst.dest_reg = trim(rest_of_line.substr(0, c1));
+                inst.src_reg1 = trim(rest_of_line.substr(c1 +1, c2 - c1 - 1));
+                inst.src_reg2 = trim(rest_of_line.substr(c2 +1));
+            }
         }
 
         inst.issue_cycle = -1;
@@ -236,6 +243,7 @@ class Simulator {
         while(completed_instructions < instructions.size()){
             cycle++;
             mem_used = false;
+
             issue();
             execute();
             mem_read();
@@ -286,7 +294,8 @@ class Simulator {
         bool busy;
         int instruction_id;      //index in instructions vector
         string destination_register;
-        bool ready;             
+        bool ready;    
+        int store_data_dependency;         
 
     };
     vector<reservation_station_slot> eff_addr_stations;
@@ -377,6 +386,36 @@ class Simulator {
         if(next_instr_issue >= instructions.size()) return; 
 
         Instruction &inst = instructions[next_instr_issue];
+
+
+
+
+            if(reorder_buffer[rob_end].busy && rob_start == rob_end){
+        rb_delays++;
+        cout << "Cycle " << cycle << ": BLOCKED: ROB full" << endl;
+        cout << "  rob_start=" << rob_start << " rob_end=" << rob_end << endl;
+        cout << "  next_instr=" << next_instr_issue << " (" << inst.og_line << ")" << endl;
+        
+        // Print ROB status
+        for(int i = 0; i < reorder_buffer.size(); i++){
+            if(reorder_buffer[i].busy){
+                cout << "  ROB[" << i << "]: inst=" << reorder_buffer[i].instruction_id 
+                     << " ready=" << reorder_buffer[i].ready << endl;
+            }
+        }
+        return;
+    }
+
+
+
+
+
+
+
+
+
+
+
  
         //Make sure ROB is not full
         if(reorder_buffer[rob_end].busy && rob_start == rob_end){
@@ -423,9 +462,11 @@ class Simulator {
         if(!inst.src_reg1.empty()){
             if(reorder_status.count(inst.src_reg1) > 0 && reorder_status[inst.src_reg1] != -1){
                 rs_slot.operand1 = reorder_status[inst.src_reg1];
+                if(inst.type == "STORE") rob_entry.store_data_dependency = reorder_status[inst.src_reg1];   
             }
             else {
                 rs_slot.operand1 = -1; 
+                if(inst.type == "STORE") rob_entry.store_data_dependency = -1;
             }
 
         }
@@ -459,10 +500,10 @@ class Simulator {
                 if(rs.remaining_cycles == 0){
                     inst.execute_complete_cycle = cycle;
                     rs.executing = false;
-                    if(inst.type == "STORE"){
+                    if(inst.type == "STORE" || inst.type == "BRANCH"){
                         reorder_buffer[rs.dest_rob_entry].ready = true;
                     }
-                    rs.busy = false;
+                    if(inst.type != "LOAD")rs.busy = false;
                 }
                 continue;
             }
@@ -477,7 +518,13 @@ class Simulator {
             */
             
             // True dependnency check
-            if(rs.operand1 != -1 || rs.operand2 != -1){
+            if(inst.type == "STORE"){
+                if(rs.operand2 != -1){
+                    true_dep_delays++;
+                    continue;
+                }
+            }
+            else if(rs.operand1 != -1 || rs.operand2 != -1){
                 true_dep_delays++;
                 continue;
             }
@@ -490,10 +537,10 @@ class Simulator {
                 inst.execute_complete_cycle = cycle;
                 rs.executing = false;  // Not executing (done!)
                 rs.remaining_cycles = 0;
-                if(inst.type == "STORE"){
+                if(inst.type == "STORE" || inst.type == "BRANCH"){
                     reorder_buffer[rs.dest_rob_entry].ready = true;
                 }
-                rs.busy = false; 
+                if(inst.type != "LOAD") rs.busy = false; 
 
             } else {
                 // Multi-cycle operation
@@ -534,6 +581,14 @@ class Simulator {
 
             inst.mem_read_cycle = cycle;
             mem_used = true;
+
+
+            //Free loads reservation station
+            for(auto &rs : eff_addr_stations){
+                if(rs.busy && rs.instruction_id == reorder_buffer[rob_index].instruction_id){
+                    rs.busy = false;
+                }
+            }
             return;
         }
 
@@ -552,7 +607,7 @@ class Simulator {
 
             Instruction &inst = instructions[reorder_buffer[rob_index].instruction_id];
 
-            if(inst.type == "STORE" || inst.write_back_cycle != -1) continue;
+            if(inst.type == "STORE" || inst.type == "BRANCH" || inst.write_back_cycle != -1) continue;
             
             bool can_wb = false;
             if(inst.type == "LOAD"){
@@ -582,6 +637,12 @@ class Simulator {
             }
         };
 
+        for(auto &entry : reorder_buffer){
+            if(entry.busy && entry.store_data_dependency == earliest_ind){
+                entry.store_data_dependency = -1;
+            }
+        }
+
         update_deps(eff_addr_stations);
         update_deps(fp_add_stations);
         update_deps(fp_mul_stations);
@@ -603,7 +664,19 @@ class Simulator {
 
         Instruction &inst = instructions[rob_entry.instruction_id];
         if(inst.mem_read_cycle == cycle || inst.write_back_cycle == cycle) return;
+
         if(inst.type == "STORE"){
+            if(rob_entry.store_data_dependency != -1){
+                int dep = rob_entry.store_data_dependency;
+                if (!reorder_buffer[dep].busy || reorder_buffer[dep].ready){
+                    rob_entry.store_data_dependency = -1;
+                }
+                else{
+                    true_dep_delays++;
+                    return;
+                }
+            }
+
             if(mem_used) return;
             mem_used = true;
         }
@@ -629,7 +702,11 @@ class Simulator {
         broadcast_commit(fp_mul_stations);
         broadcast_commit(int_stations);
 
-
+        for(auto &entry : reorder_buffer){
+            if(entry.busy && entry.store_data_dependency == rob_start){
+                entry.store_data_dependency = -1;
+            }
+        }
 
 
 

@@ -72,3 +72,16 @@ stores what is in x2
 3. At most one data memory access (memory read or memory write) can occur per cycle.
 Read - load in mem stage
 Write - Store in commit stage 
+
+
+
+
+
+-- loads should not free until memory read?? - YES
+
+fmul - after exec 
+add - after exec 
+store - after exec 
+fadd - after exec 
+fsub - after exec 
+fdiv - after exec
