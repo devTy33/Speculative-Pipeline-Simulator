@@ -1,5 +1,4 @@
-fadd.s f1,f2,f3
-fadd.s f4,f5,f6
-fadd.s f7,f8,f9
-fadd.s f10,f11,f12
-fadd.s f13,f14,f15
+add    x1,x1,x2
+lw     x2,34(x1):1
+lw     x2,35(x1):2
+sw     x2,36(x1):1

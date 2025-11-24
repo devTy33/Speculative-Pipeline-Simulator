@@ -461,8 +461,8 @@ class Simulator {
                     rs.executing = false;
                     if(inst.type == "STORE"){
                         reorder_buffer[rs.dest_rob_entry].ready = true;
-                        rs.busy = false; // release store, they have no write back
                     }
+                    rs.busy = false;
                 }
                 continue;
             }
@@ -492,8 +492,9 @@ class Simulator {
                 rs.remaining_cycles = 0;
                 if(inst.type == "STORE"){
                     reorder_buffer[rs.dest_rob_entry].ready = true;
-                    rs.busy = false; 
                 }
+                rs.busy = false; 
+
             } else {
                 // Multi-cycle operation
                 rs.executing = true;
@@ -514,6 +515,7 @@ class Simulator {
         for(int i = 0; i < reorder_buffer.size(); i++){
             int rob_index = (rob_start + i) % reorder_buffer.size();
             if(rob_index == rob_end && !reorder_buffer[rob_index].busy) break;
+            //if(rob_index == rob_end) break;
             if(!reorder_buffer[rob_index].busy) continue;
 
             Instruction &inst = instructions[reorder_buffer[rob_index].instruction_id];
@@ -545,10 +547,11 @@ class Simulator {
         for(int i = 0; i < reorder_buffer.size(); i++){
             int rob_index = (rob_start + i) % reorder_buffer.size();
             if(rob_index == rob_end && !reorder_buffer[rob_index].busy) break;
+            //if(rob_index == rob_end) break;
             if(!reorder_buffer[rob_index].busy) continue;
 
             Instruction &inst = instructions[reorder_buffer[rob_index].instruction_id];
-            
+
             if(inst.type == "STORE" || inst.write_back_cycle != -1) continue;
             
             bool can_wb = false;

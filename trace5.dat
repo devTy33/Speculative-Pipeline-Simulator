@@ -1,0 +1,2 @@
+fadd.s f0,f1,f2
+fadd.s f3,f0,f2
