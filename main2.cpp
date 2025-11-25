@@ -510,6 +510,7 @@ class Simulator {
 
     void mem_read(){
         //If a store is ready to commit this cycle, block all loads
+        bool blocking_store = false;
         if(!(rob_start == rob_end && !reorder_buffer[rob_start].busy)){
             reorder_buffer_entry &head = reorder_buffer[rob_start];
             if(head.busy && head.ready){
@@ -519,7 +520,7 @@ class Simulator {
                    head_inst.execute_complete_cycle != cycle &&
                    head_inst.mem_read_cycle != cycle &&
                    head_inst.write_back_cycle != cycle){
-                    return;
+                    blocking_store = true;
                 }
             }
         }
@@ -535,15 +536,21 @@ class Simulator {
 
             if(inst.type != "LOAD" || inst.execute_complete_cycle == -1 || inst.mem_read_cycle != -1 || inst.execute_complete_cycle == cycle) continue;
 
+            if(blocking_store){
+                dmc_delays++;
+                continue;
+            }
+            if(mem_used){
+                dmc_delays++;
+                return;
+            }
+
             if(check_mem_dependency(reorder_buffer[rob_index].instruction_id)){
                 true_dep_delays++;
                 continue; 
             }
 
-            if(mem_used){
-                dmc_delays++;
-                return;
-            }
+            
 
             inst.mem_read_cycle = cycle;
             mem_used = true;
@@ -641,7 +648,10 @@ class Simulator {
                 }
             }
 
-            if(mem_used) return;
+            if(mem_used){
+                dmc_delays++;
+                return;
+            }
             mem_used = true;
         }
 
