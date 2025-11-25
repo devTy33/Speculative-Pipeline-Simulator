@@ -475,10 +475,12 @@ class Simulator {
                     continue;
                 }
             }
+            
             else if(rs.operand1 != -1 || rs.operand2 != -1){
                 true_dep_delays++;
                 continue;
             }
+            
 
             inst.execute_start_cycle = cycle;
             int latency = get_latency(inst.type);
@@ -510,8 +512,9 @@ class Simulator {
 
     void mem_read(){
         //If a store is ready to commit this cycle, block all loads
+        // Store only blocks if it is able to commit this cycle!!!!!
         bool blocking_store = false;
-        if(!(rob_start == rob_end && !reorder_buffer[rob_start].busy)){
+        if ((rob_start != rob_end || reorder_buffer[rob_start].busy) && !committed_this_cycle && !mem_used){
             reorder_buffer_entry &head = reorder_buffer[rob_start];
             if(head.busy && head.ready){
                 Instruction &head_inst = instructions[head.instruction_id];
