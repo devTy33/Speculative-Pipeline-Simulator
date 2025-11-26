@@ -547,7 +547,7 @@ class Simulator {
             }
             if(mem_used){
                 dmc_delays++;
-                return;
+                continue;
             }
 
             if(check_mem_dependency(reorder_buffer[rob_index].instruction_id)){
