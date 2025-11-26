@@ -567,7 +567,7 @@ class Simulator {
                     rs.busy = false;
                 }
             }
-            return;
+            //return;
         }
 
 
