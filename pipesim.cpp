@@ -121,10 +121,11 @@ vector<Instruction> parse_instructions(){
     }
     return instructions;
 }
+
 int parse_config(string filename, Config &config){
     ifstream file(filename);
     if(!file.is_open()){
-        cerr << "Error opening config file: " << filename << endl;
+        cerr << "can't open config: " << filename << endl;
         return -1;
     }
     string line; 
@@ -152,7 +153,7 @@ int parse_config(string filename, Config &config){
         value.erase(value.find_last_not_of(" \t") + 1);
         int int_value = stoi(value);
         if(section == "buffers"){
-            if(key == "eff addr") config.eff_addr_stations = int_value;  // Note: "eff addr" not "eff_addr_stations"
+            if(key == "eff addr") config.eff_addr_stations = int_value; 
             else if(key == "fp adds") config.fp_add_stations = int_value;
             else if(key == "fp muls") config.fp_mul_stations = int_value;
             else if(key == "ints") config.int_stations = int_value;
@@ -210,7 +211,8 @@ class Simulator {
         first_output = true;
         committed_this_cycle = false;
     }
-    void dump_output(){
+
+    void print_output(){
         printf("Configuration\n");
         printf("-------------\n");
         printf("buffers:\n");
@@ -235,7 +237,6 @@ class Simulator {
         printf("reorder buffer delays: %d\n", rb_delays);
         printf("reservation station delays: %d\n", rs_delays);
         printf("data memory conflict delays: %d\n", dmc_delays);
-        // You'll need to track true_dependence_delays separately
         printf("true dependence delays: %d\n", true_dep_delays);
     }
 
@@ -252,11 +253,9 @@ class Simulator {
             write_back();
             commit();
 
-            //cout << "After cycle " << cycle << ":\n";
-            //cout << completed_instructions << " instructions completed\n";
         }
 
-        dump_output();
+        print_output();
 
     }
 
@@ -363,13 +362,12 @@ class Simulator {
         //Make sure ROB is not full
         if(reorder_buffer[rob_end].busy && rob_start == rob_end){
             rb_delays++;
-            cout << "  BLOCKED: ROB full" << endl;
             return;
         }
       
         vector<reservation_station_slot> *rs = get_reservation_station(inst.type);
         if(rs == nullptr){
-            cerr << "Unknown instruction type: " << inst.type << endl;
+            cerr << "Unknown instruction type should not be null!! " << inst.type << endl;
             return;
         }
 
@@ -394,6 +392,7 @@ class Simulator {
         rob_entry.ready = false;
         rob_entry.store_data_dependency = -1;
 
+        // set reservation station slot
         reservation_station_slot &rs_slot = (*rs)[free_rs_index];
         rs_slot.busy = true;
         rs_slot.instruction_id = next_instr_issue;
@@ -402,6 +401,7 @@ class Simulator {
         rs_slot.remaining_cycles = get_latency(inst.type);
 
 
+        // set status of source operands
 
         if(!inst.src_reg1.empty()){
             if(reorder_status.count(inst.src_reg1) > 0 && reorder_status[inst.src_reg1] != -1){
@@ -450,6 +450,8 @@ class Simulator {
     }
 
     void exec_helper(vector<reservation_station_slot> &rs_pool){
+
+        // continue executing items already executing given RS
         for(auto &rs : rs_pool){
             if(!rs.busy) continue;
             Instruction &inst = instructions[rs.instruction_id];
@@ -475,7 +477,7 @@ class Simulator {
                     continue;
                 }
             }
-            
+            // Another true dependency check
             else if(rs.operand1 != -1 || rs.operand2 != -1){
                 true_dep_delays++;
                 continue;
@@ -484,7 +486,7 @@ class Simulator {
 
             inst.execute_start_cycle = cycle;
             int latency = get_latency(inst.type);
-        
+            // do work for newly starting execution
             if(latency == 1){
                 // Complete immediately
                 inst.execute_complete_cycle = cycle;
@@ -528,11 +530,11 @@ class Simulator {
             }
         }
 
-  
+        // Go through ROB and find loads that can read (1 read per cycle so lots of continues)
         for(int i = 0; i < reorder_buffer.size(); i++){
             int rob_index = (rob_start + i) % reorder_buffer.size();
             if(rob_index == rob_end && !reorder_buffer[rob_index].busy) break;
-            //if(rob_index == rob_end) break;
+            
             if(!reorder_buffer[rob_index].busy) continue;
 
             Instruction &inst = instructions[reorder_buffer[rob_index].instruction_id];
@@ -559,7 +561,7 @@ class Simulator {
             mem_used = true;
 
 
-            //Free loads reservation station
+            //Free loads reservation station since for some reason load is the only RS that doesn't get freed in execute
             for(auto &rs : eff_addr_stations){
                 if(rs.busy && rs.instruction_id == reorder_buffer[rob_index].instruction_id){
                     rs.busy = false;
@@ -575,6 +577,8 @@ class Simulator {
      
         int earliest_cycle = INT_MAX;
         int earliest_ind = -1;
+
+        //iterate through the reorder buffer because the resrvation stations can be cleared after execution
         for(int i = 0; i < reorder_buffer.size(); i++){
             int rob_index = (rob_start + i) % reorder_buffer.size();
             if(rob_index == rob_end && !reorder_buffer[rob_index].busy) break;
@@ -599,11 +603,13 @@ class Simulator {
             }
 
         }
+        //The earliest instruciton takes priority
         if(earliest_ind == -1) return;
         Instruction &earliest = instructions[reorder_buffer[earliest_ind].instruction_id];
         earliest.write_back_cycle = cycle;
         reorder_buffer[earliest_ind].ready = true;
 
+        // update dependencies (same as commit)
         auto update_deps = [&](vector<reservation_station_slot>& rs_pool){
             for(auto &slot : rs_pool){
                 if(slot.busy){
@@ -632,7 +638,7 @@ class Simulator {
             return;
         } 
 
-    
+        //must be ready to commit in the ROB
         reorder_buffer_entry &rob_entry = reorder_buffer[rob_start];
         if(!rob_entry.busy || !rob_entry.ready) return;
 
@@ -642,6 +648,7 @@ class Simulator {
         if(inst.type == "STORE"){
             if(rob_entry.store_data_dependency != -1){
                 int dep = rob_entry.store_data_dependency;
+                // if dep is read in ROB than we can clear it 
                 if (!reorder_buffer[dep].busy || reorder_buffer[dep].ready){
                     rob_entry.store_data_dependency = -1;
                 }
@@ -663,7 +670,9 @@ class Simulator {
 
         inst.commit_cycle = cycle;
 
-        auto broadcast_commit = [&](vector<reservation_station_slot>& rs_pool){
+        // update corresponding deps in reservation stations 
+
+        auto update_deps = [&](vector<reservation_station_slot>& rs_pool){
             for(auto &slot : rs_pool){
                 if(slot.busy){
                     if(slot.operand1 == rob_start) slot.operand1 = -1;
@@ -671,12 +680,13 @@ class Simulator {
                 }
             }
         };
-        
-        broadcast_commit(eff_addr_stations);
-        broadcast_commit(fp_add_stations);
-        broadcast_commit(fp_mul_stations);
-        broadcast_commit(int_stations);
 
+        update_deps(eff_addr_stations);
+        update_deps(fp_add_stations);
+        update_deps(fp_mul_stations);
+        update_deps(int_stations);
+
+        // indipendently update the store dep flag
         for(auto &entry : reorder_buffer){
             if(entry.busy && entry.store_data_dependency == rob_start){
                 entry.store_data_dependency = -1;
@@ -745,7 +755,7 @@ class Simulator {
 int main(){
     Config config;
     if(parse_config("config.txt", config) != 0) {
-        cerr << "Failed to parse config file." << endl;
+        cerr << "could not parse config file" << endl;
         return 1;
     }
     vector<Instruction> instructions = parse_instructions();

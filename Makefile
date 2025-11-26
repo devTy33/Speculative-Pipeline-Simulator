@@ -1,8 +1,8 @@
-simulator: main.cpp
-	g++ -std=c++11 -Wno-deprecated-declarations main.cpp -o simulator
+pipesim: pipesim.cpp
+	g++ -std=c++11 -Wno-deprecated-declarations pipesim.cpp -o pipesim
 
-simulator2: main2.cpp
-	g++ -std=c++11 -Wno-deprecated-declarations main2.cpp -o simulator2
+run: pipesim
+	./pipesim < trace2.dat
 
 clean:	
-	rm -f simulator simulator2
+	rm -f pipesim
